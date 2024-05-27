@@ -22,23 +22,32 @@ if not dbc_file_path:
 # Load the DBC file
 db = cantools.database.load_file(dbc_file_path)
 
-# Read the CSV file and skip the first two rows which seem to contain metadata
-df_csv = pd.read_csv(csv_file_path, delimiter=';', skiprows=2)
+# Extract frame IDs and signal names from the DBC file
+dbc_frame_ids = [msg.frame_id for msg in db.messages]
+print("Frame IDs in DBC file:", dbc_frame_ids)
 
-# Manually rename the columns based on their positions
-df_csv.columns = ['Index', 'Timestamp', 'Time', 'Type', 'Frame ID', 'Length', 'Data']
+# Print signal names for each message in the DBC file
+for msg in db.messages:
+    print(f"Message: {msg.name} (ID: {msg.frame_id})")
+    for signal in msg.signals:
+        print(f"  Signal: {signal.name}")
 
-# Check if necessary columns are present
-if 'Frame ID' not in df_csv.columns or 'Data' not in df_csv.columns:
-    print("The required 'Frame ID' or 'Data' columns are missing in the CSV file.")
-    print("Current columns in the CSV file:", df_csv.columns)
-    raise KeyError("The required 'Frame ID' or 'Data' columns are missing in the CSV file.")
+# Read the CSV file
+df_csv = pd.read_csv(csv_file_path, skiprows=2, delimiter=';')
+
+# Print the actual column names
+print("Columns in CSV file:", df_csv.columns)
+
+# Rename columns to match expected names
+df_csv.columns = ['Nr', 'Timestamp', 'Time', 'Type', 'Frame ID', 'Length', 'Data']
+
+print("Columns after renaming:", df_csv.columns)
 
 # Function to decode CAN message using cantools
 def decode_can_message(row):
     try:
         message_id = int(row['Frame ID'], 16)
-        if message_id in [msg.frame_id for msg in db.messages]:
+        if message_id in dbc_frame_ids:
             message = db.get_message_by_frame_id(message_id)
             data = bytes.fromhex(row['Data'].replace(' ', ''))
             decoded = message.decode(data)
@@ -58,31 +67,32 @@ def decode_can_message(row):
 # Apply the decoding function to each row in the CSV file
 decoded_data = df_csv.apply(lambda row: decode_can_message(row), axis=1)
 
-# Convert the decoded data to a DataFrame and ensure proper alignment by using .fillna()
+# Convert the decoded data to a DataFrame
 decoded_df = pd.json_normalize(decoded_data)
 
-# Combine the original CSV data with the decoded data, aligning columns correctly
-df_combined = pd.concat([df_csv.reset_index(drop=True), decoded_df.reset_index(drop=True)], axis=1)
+# Combine the original CSV data with the decoded data
+df_combined = pd.concat([df_csv, decoded_df], axis=1)
 
-# Ensure all columns from both original and decoded data are present
-df_combined = df_combined.fillna('null')
+# Define the output directory and file name
+output_dir = "E:\\KONWERT\\CAN\\Can_extracted_csv"
+os.makedirs(output_dir, exist_ok=True)
 
-# Extract the base name of the CSV file
-csv_base_name = os.path.basename(csv_file_path).split('.')[0]
-# Generate the output file name with the prefix "extractedcan"
-output_file_name = f"extractedcan_{csv_base_name}.csv"
+# Check if the number of rows exceeds the maximum Excel limit
+max_rows_per_sheet = 1048576
+output_excel_file_path = os.path.join(output_dir, f"decoded_can_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx")
 
-# Specify the directory path to save the file
-output_directory = r"E:\KONWERT\CAN\Can_extracted_csv"
+# Write to Excel with multiple sheets if necessary
+with pd.ExcelWriter(output_excel_file_path, engine='xlsxwriter') as writer:
+    if len(df_combined) > max_rows_per_sheet:
+        num_parts = (len(df_combined) // max_rows_per_sheet) + 1
+        for i in range(num_parts):
+            start_row = i * max_rows_per_sheet
+            end_row = start_row + max_rows_per_sheet
+            part_df = df_combined.iloc[start_row:end_row]
+            part_df.to_excel(writer, sheet_name=f'Part_{i+1}', index=False)
+            print(f"Saved part {i+1} to sheet Part_{i+1}")
+    else:
+        df_combined.to_excel(writer, index=False)
+        print(f"Decoded CAN data saved to {output_excel_file_path}")
 
-# Combine the directory path and the file name
-output_csv_file_path = os.path.join(output_directory, output_file_name)
-
-# Save the combined data to a new CSV file
-df_combined.to_csv(output_csv_file_path, index=False)
-
-# Display the combined dataframe
-print(df_combined.head())
-
-# Confirm the output file path
-print(f"Data saved to: {output_csv_file_path}")
+print(f"Decoded CAN data saved to {output_excel_file_path}")
